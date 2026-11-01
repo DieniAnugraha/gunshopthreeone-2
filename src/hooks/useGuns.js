@@ -1,13 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
 import gunService from '../services/gunService'
 
-// ---------------------------------------------------------------------------
-// useGuns — fetch the paginated / filtered product list from the API.
-//
-// Returns { guns, loading, error, pagination, refetch }.
-// When the API is unreachable the `error` string will be set and `guns`
-// will remain an empty array so the UI can show a proper error state.
-// ---------------------------------------------------------------------------
+const CACHE_KEY = 'bore_barrel_guns_cache'
+const CACHE_TIME_KEY = 'bore_barrel_guns_cache_time'
+const CACHE_TTL = 5 * 60 * 1000 // 5 menit
 
 export function useGuns(params = {}) {
   const [guns, setGuns] = useState([])
@@ -15,76 +11,58 @@ export function useGuns(params = {}) {
   const [error, setError] = useState(null)
   const [pagination, setPagination] = useState(null)
 
-  // Serialise params so the effect re-runs when they change.
   const paramKey = JSON.stringify(params)
 
-  const fetchGuns = useCallback(async () => {
+  const fetchGuns = useCallback(async (forceRefresh = false) => {
     try {
       setLoading(true)
       setError(null)
 
-      const response = await gunService.getGuns(params)
+      if (!forceRefresh) {
+        const cachedData = localStorage.getItem(CACHE_KEY)
+        const cachedTime = localStorage.getItem(CACHE_TIME_KEY)
+        if (cachedData && cachedTime && Date.now() - Number(cachedTime) < CACHE_TTL) {
+          const parsed = JSON.parse(cachedData)
+          setGuns(parsed.data || [])
+          setPagination(parsed.pagination || null)
+          setLoading(false)
+          return
+        }
+      }
 
+      const response = await gunService.getGuns(params)
       if (response.success) {
-        setGuns(response.data || [])
-        setPagination(response.pagination || null)
+        const dataList = response.data || []
+        const pageInfo = response.pagination || null
+        setGuns(dataList)
+        setPagination(pageInfo)
+
+        try {
+          localStorage.setItem(CACHE_KEY, JSON.stringify({ data: dataList, pagination: pageInfo }))
+          localStorage.setItem(CACHE_TIME_KEY, String(Date.now()))
+        } catch {
+          // Abaikan quota storage
+        }
       } else {
         setError(response.message || 'Failed to fetch products.')
       }
     } catch (err) {
       setError(err.message || 'An error occurred while fetching products.')
-      setGuns([])
+      const cachedData = localStorage.getItem(CACHE_KEY)
+      if (cachedData) {
+        const parsed = JSON.parse(cachedData)
+        setGuns(parsed.data || [])
+      } else {
+        setGuns([])
+      }
     } finally {
       setLoading(false)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paramKey])
 
   useEffect(() => {
     fetchGuns()
   }, [fetchGuns])
 
-  return { guns, loading, error, pagination, refetch: fetchGuns }
-}
-
-// ---------------------------------------------------------------------------
-// useGunById — fetch a single product by its UUID.
-//
-// Returns { gun, loading, error, refetch }.
-// ---------------------------------------------------------------------------
-
-export function useGunById(id) {
-  const [gun, setGun] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
-
-  const fetchGun = useCallback(async () => {
-    if (!id) {
-      setLoading(false)
-      return
-    }
-    try {
-      setLoading(true)
-      setError(null)
-
-      const response = await gunService.getGunById(id)
-
-      if (response.success) {
-        setGun(response.data)
-      } else {
-        setError(response.message || 'Product not found.')
-      }
-    } catch (err) {
-      setError(err.message || 'Failed to load product details.')
-      setGun(null)
-    } finally {
-      setLoading(false)
-    }
-  }, [id])
-
-  useEffect(() => {
-    fetchGun()
-  }, [fetchGun])
-
-  return { gun, loading, error, refetch: fetchGun }
+  return { guns, loading, error, pagination, refetch: () => fetchGuns(true) }
 }
